@@ -1,5 +1,6 @@
 package com.example.es.entity;
 
+import com.example.es.annotation.EsField;
 import lombok.Data;
 import lombok.experimental.Accessors;
 import org.springframework.data.annotation.Id;
@@ -17,15 +18,12 @@ import org.springframework.data.elasticsearch.annotations.FieldType;
  */
 @Data
 @Accessors(chain = true)
-@Document(indexName = "users", type="user")
 public class User {
 
-    @Id
     private String id;
-    @Field(type = FieldType.Text, analyzer = "ik_max_word")
+
     private String name;
-    @Field(type = FieldType.Keyword)
+
+    @EsField(isExist = false)
     private String sex;
-    @Field(type = FieldType.Keyword)
-    private String tel;
 }

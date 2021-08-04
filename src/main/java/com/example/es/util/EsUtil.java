@@ -4,8 +4,6 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.convert.Convert;
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.ReflectUtil;
-import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSONUtil;
 import com.example.es.annotation.EsField;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,12 +18,13 @@ import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestHighLevelClient;
 import org.elasticsearch.common.xcontent.XContentType;
-import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.join.query.HasParentQueryBuilder;
 import org.elasticsearch.join.query.JoinQueryBuilders;
+import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
+import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
 import java.io.IOException;
@@ -38,13 +37,14 @@ import java.util.stream.Collectors;
 
 /**
  * <p>
- *
+ * elasticSearch 工具类
  * </p>
  *
  * @author heshuyao
- * @since 2021/8/3 - 16:39
+ * @since 2021/7/27 - 17:28
  */
 @Slf4j
+@Component
 @AllArgsConstructor
 public class EsUtil {
 
@@ -71,8 +71,7 @@ public class EsUtil {
         try {
             return client.search(searchRequest, RequestOptions.DEFAULT);
         } catch (IOException e) {
-            e.printStackTrace();
-            log.error("esUtil# search#" + e.getMessage(), e);
+            log.error("esUtil # search #{}", e.getMessage(), e);
             return null;
         }
     }
@@ -83,7 +82,7 @@ public class EsUtil {
      * </p>
      *
      * @param source source
-     * @param extra  extra  所需要加入的额外字段
+     * @param extra  extra  需要加入的额外字段
      * @return Map
      * @author heshuyao
      * @since 2021/7/30
@@ -93,11 +92,11 @@ public class EsUtil {
         Field[] fields = ReflectUtil.getFields(source.getClass());
         Arrays.stream(fields).forEach(field -> {
             field.setAccessible(true);
-            EsField esFiled = field.getAnnotation(EsField.class);
-            if (esFiled != null && !esFiled.isExist()) {
+            EsField esField = field.getAnnotation(EsField.class);
+            if (esField != null && !esField.isExist()) {
                 return;
             }
-            String filedName = esFiled != null ? esFiled.name() : field.getName();
+            String filedName = esField != null ? esField.name() : field.getName();
             try {
                 Object filedValue = field.get(source);
                 if (filedValue != null && filedValue.getClass().equals(LocalDateTime.class)) {
@@ -106,7 +105,7 @@ public class EsUtil {
                 }
                 esMap.put(filedName, filedValue);
             } catch (IllegalAccessException e) {
-                log.error("esUtil#toEsMap#" + e.getMessage(), e);
+                log.error("esUtil # toEsMap #{}", e.getMessage(), e);
             }
         });
         if (extra != null) {
@@ -125,121 +124,51 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/8/2
      */
-    public static List<Map<String, Object>> toEsMaps(List<? extends Object> list) {
+    public static List<Map<String, Object>> toEsMaps(List<?> list, Consumer<? super Map<String, Object>> extra) {
         if (CollUtil.isNotEmpty(list)) {
-            return list.stream().map(a -> EsUtil.toEsMap(a, null)).collect(Collectors.toList());
+            return list.stream().map(a -> EsUtil.toEsMap(a, extra)).collect(Collectors.toList());
         }
         return null;
     }
 
-    /**
-     * <p>
-     * 增添join类型的子文档
-     * </p>
-     *
-     * @param indexName indexName
-     * @param joinName  joinName
-     * @param childName childName
-     * @param parentId  parentId
-     * @param sourceMap sourceMap
-     * @return Boolean
-     * @author heshuyao
-     * @since 2021/7/31
-     */
-    public static Boolean addChildDoc(String indexName, String joinName, String childName, Integer parentId,
-                                      Map<String, Object> sourceMap) {
-        if (checkChildDoc(indexName, Convert.toInt(sourceMap.get("id")), parentId)) {
-            return Boolean.FALSE;
-        }
-        sourceMap.put(joinName, JSONUtil.parseObj(StrUtil.format("{name:{},parent:{}}", childName, parentId)));
-        IndexRequest indexRequest = new IndexRequest(indexName, "_doc");
-        indexRequest.id(String.valueOf(sourceMap.remove("id")))
-                .routing(String.valueOf(parentId))
-                .source(sourceMap, XContentType.JSON);
-        try {
-            client.index(indexRequest, RequestOptions.DEFAULT);
-            return Boolean.TRUE;
-        } catch (Exception e) {
-            log.error("esUtil # addChildDoc #" + e.getMessage(), e);
-            return Boolean.FALSE;
-        }
-    }
 
     /**
      * <p>
-     * 批量增加子文档
+     * 批量增加文档
      * </p>
      *
-     * @param indexName     indexName
-     * @param joinName      joinName
-     * @param childName     childName
-     * @param parentKeyName parentKeyName  join类型文档中父文档与子文档关联的主外键名称,
-     * @param sourceMaps    sourceMaps
+     * @param indexName  indexName
+     * @param sourceMaps sourceMaps
      * @return Boolean
      * @author heshuyao
      * @since 2021/8/1
      */
-    public static Boolean batchAddChild(String indexName, String joinName, String childName, String parentKeyName,
-                                        List<? extends Map<String, Object>> sourceMaps) {
+    public static Boolean batchAddDoc(String indexName, List<? extends Map<String, Object>> sourceMaps, String routAddress) {
         if (CollUtil.isNotEmpty(sourceMaps)) {
             BulkRequest bulkRequest = new BulkRequest();
             int count = sourceMaps.size();
             for (Map<String, Object> m : sourceMaps) {
                 Object id = m.get("id");
-                Integer parentId = Convert.toInt(m.get(parentKeyName));
-                if (checkChildDoc(indexName, Convert.toInt(id), parentId) || ObjectUtil.isEmpty(id)) {
+                if (checkDoc(indexName, Convert.toInt(id), String.valueOf(routAddress)) || ObjectUtil.isEmpty(id)) {
                     count--;
                     continue;
                 }
-                IndexRequest indexRequest = new IndexRequest(indexName);
-                m.put(joinName, JSONUtil.parseObj(StrUtil.format("{name:{},parent:{}}", childName, parentId)));
-                indexRequest.type("_doc")
-                        .id(String.valueOf(m.remove("id")))
-                        .routing(String.valueOf(parentId))
-                        .source(m, XContentType.JSON)
-                        .opType("create");
+                IndexRequest indexRequest = new IndexRequest(indexName, "_doc", String.valueOf(m.remove("id")));
+                indexRequest.source(m);
+                indexRequest.routing(routAddress);
                 bulkRequest.add(indexRequest);
             }
             if (count == 0) {
                 return Boolean.FALSE;
             }
             try {
-                client.bulk(bulkRequest, RequestOptions.DEFAULT);
-                return Boolean.TRUE;
+                return client.bulk(bulkRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
             } catch (IOException e) {
-                log.error("esUtil # batchAddChild #" + e.getMessage(), e);
+                log.error("esUtil # batchAddChild #{}", e.getMessage(), e);
                 return Boolean.FALSE;
             }
         }
         return Boolean.FALSE;
-    }
-
-    /**
-     * <p>
-     * 删除join类型的子文档
-     * </p>
-     *
-     * @param indexName indexName
-     * @param childId   childId
-     * @param parentId  parentId
-     * @return Boolean
-     * @author heshuyao
-     * @since 2021/7/29
-     */
-    public static Boolean delChildDoc(String indexName, Integer childId, Integer parentId) {
-        if (!checkChildDoc(indexName, childId, parentId)) {
-            return Boolean.FALSE;
-        }
-        DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc", String.valueOf(childId))
-                .routing(String.valueOf(parentId));
-        try {
-            client.delete(deleteRequest, RequestOptions.DEFAULT);
-            return Boolean.TRUE;
-        } catch (IOException e) {
-            e.printStackTrace();
-            log.error("esUtil # delChildDoc #" + e.getMessage(), e);
-            return Boolean.FALSE;
-        }
     }
 
     /**
@@ -253,38 +182,20 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean delDoc(String indexName, Integer id) {
-        if (!checkDoc(indexName, id)) {
+    public static Boolean delDoc(String indexName, Integer id, String routAddress) {
+        if (!checkDoc(indexName, id, routAddress)) {
             return Boolean.FALSE;
         }
-        DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc",
-                String.valueOf(id));
+        DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc", String.valueOf(id));
+        deleteRequest.routing(routAddress);
         try {
-            client.delete(deleteRequest, RequestOptions.DEFAULT);
-            return Boolean.TRUE;
+            return client.delete(deleteRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
         } catch (Exception e) {
-            e.printStackTrace();
-            log.error("esUtil # delDoc #" + e.getMessage(), e);
+            log.error("esUtil # delDoc #{}", e.getMessage(), e);
             return Boolean.FALSE;
         }
     }
 
-
-    /**
-     * <p>
-     * 增添join类型的父文档
-     * </p>
-     *
-     * @param indexName indexName
-     * @param sourceMap sourceMap
-     * @return Boolean
-     * @author heshuyao
-     * @since 2021/7/30
-     */
-    public static Boolean addParentDoc(String indexName, String joinName, String parentName, Map<String, Object> sourceMap) {
-        sourceMap.put(joinName, parentName);
-        return addDoc(indexName, sourceMap);
-    }
 
     /**
      * <p>
@@ -297,54 +208,19 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/31
      */
-    public static Boolean addDoc(String indexName, Map<String, Object> sourceMap) {
-        if (checkParentDoc(indexName, Convert.toInt(sourceMap.get("id")))) {
+    public static Boolean addDoc(String indexName, Map<String, Object> sourceMap, String routAddress) {
+        if (checkDoc(indexName, Convert.toInt(sourceMap.get("id")), routAddress)) {
             return Boolean.FALSE;
         }
         IndexRequest indexRequest = new IndexRequest(indexName, "_doc");
-        indexRequest.id(String.valueOf(sourceMap.remove("id")))
-                .source(sourceMap, XContentType.JSON);
+        indexRequest.id(String.valueOf(sourceMap.remove("id"))).source(sourceMap, XContentType.JSON);
+        indexRequest.routing(routAddress);
         try {
-            client.index(indexRequest, RequestOptions.DEFAULT);
-            return Boolean.TRUE;
-        } catch (IOException e) {
-            log.error("esUtil # addDoc # " + e.getMessage(), e);
+            return client.index(indexRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
+        } catch (Exception e) {
+            log.error("esUtil # addDoc #{}", e.getMessage(), e);
             return Boolean.FALSE;
         }
-    }
-
-    /**
-     * <p>
-     * 删除父文档
-     * </p>
-     *
-     * @param indexName indexName
-     * @param parentId  parentId
-     * @return Boolean
-     * @author heshuyao
-     * @since 2021/7/31
-     */
-    public static Boolean delParentDoc(String indexName, Integer parentId) {
-        List<Integer> childrenIds = getChildrenIds(indexName, "collection_content", parentId);
-        if (childrenIds != null) {
-            childrenIds.forEach(id -> delChildDoc(indexName, id, parentId));
-        }
-        return delDoc(indexName, parentId);
-    }
-
-    /**
-     * <p>
-     * 更新join类型的父文档
-     * </p>
-     *
-     * @param indexName indexName
-     * @param sourceMap sourceMap
-     * @return Boolean
-     * @author heshuyao
-     * @since 2021/7/30
-     */
-    public static Boolean updateParentDoc(String indexName, Map<String, Object> sourceMap) {
-        return updateDoc(indexName, sourceMap);
     }
 
     /**
@@ -358,69 +234,24 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/30
      */
-    public static Boolean updateDoc(String indexName, Map<String, Object> sourceMap) {
-        if (!checkDoc(indexName, Convert.toInt(sourceMap.get("id")))) {
+    public static Boolean updateDoc(String indexName, Map<String, Object> sourceMap, String routAddress) {
+        if (!checkDoc(indexName, Convert.toInt(sourceMap.get("id")), routAddress)) {
             return Boolean.FALSE;
         }
-        UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc",
-                String.valueOf(sourceMap.remove("id")));
+        UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc", String.valueOf(sourceMap.remove("id")));
+        updateRequest.routing(routAddress);
         updateRequest.doc(sourceMap, XContentType.JSON);
         try {
-            client.update(updateRequest, RequestOptions.DEFAULT);
-            return Boolean.TRUE;
+            return client.update(updateRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
         } catch (Exception e) {
-            log.error("esUtil#updateDoc#" + e.getMessage(), e);
+            log.error("esUtil # updateDoc #{}", e.getMessage(), e);
             return Boolean.FALSE;
         }
     }
 
     /**
      * <p>
-     * 批量增加join类型的父文档
-     * </p>
-     *
-     * @param indexName  indexName
-     * @param sourceMaps sourceMaps
-     * @return Boolean
-     * @author heshuyao
-     * @since 2021/7/29
-     */
-    public static Boolean batchAddParent(String indexName, String joinName, String parentName,
-                                         List<? extends Map<String, Object>> sourceMaps) {
-        if (CollUtil.isNotEmpty(sourceMaps)) {
-            BulkRequest bulkRequest = new BulkRequest();
-            int count = sourceMaps.size();
-            for (Map<String, Object> v : sourceMaps) {
-                Object id = v.get("id");
-                if (checkParentDoc(indexName, Convert.toInt(id)) || ObjectUtil.isEmpty(id)) {
-                    count--;
-                    continue;
-                }
-                IndexRequest indexRequest = new IndexRequest(indexName);
-                v.put(joinName, parentName);
-                indexRequest.type("_doc")
-                        .id(String.valueOf(v.remove("id")))
-                        .source(v, XContentType.JSON);
-                bulkRequest.add(indexRequest);
-            }
-            if (count == 0) {
-                return Boolean.FALSE;
-            }
-            try {
-                client.bulk(bulkRequest, RequestOptions.DEFAULT);
-                return Boolean.TRUE;
-            } catch (IOException e) {
-                log.error("esUtil # batchAddParent #" + e.getMessage(), e);
-                return Boolean.FALSE;
-            }
-        }
-        return Boolean.FALSE;
-    }
-
-
-    /**
-     * <p>
-     * 批量更新join类型的父文档
+     * 批量更新文档
      * </p>
      *
      * @param indexName  indexName
@@ -429,19 +260,17 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean batchUpdateParent(String indexName, List<? extends Map<String, Object>> sourceMaps) {
+    public static Boolean batchUpdateDoc(String indexName, List<? extends Map<String, Object>> sourceMaps) {
         if (CollUtil.isNotEmpty(sourceMaps)) {
             BulkRequest bulkRequest = new BulkRequest();
             int count = sourceMaps.size();
             for (Map<String, Object> v : sourceMaps) {
                 Object id = v.get("id");
-                if (!checkParentDoc(indexName, Convert.toInt(id))) {
-                    log.info(StrUtil.format("esUtil#batchUpdateParent#更新失败，id={}的文档不存在，无法更新", id));
+                if (!checkDoc(indexName, Convert.toInt(id), null)) {
                     count--;
                     continue;
                 }
-                UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc",
-                        String.valueOf(v.remove("id")));
+                UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc", String.valueOf(v.remove("id")));
                 updateRequest.doc(v, XContentType.JSON);
                 bulkRequest.add(updateRequest);
             }
@@ -452,7 +281,7 @@ public class EsUtil {
                 client.bulk(bulkRequest, RequestOptions.DEFAULT);
                 return Boolean.TRUE;
             } catch (IOException e) {
-                log.error("esUtil # batchUpdateParent #" + e.getMessage(), e);
+                log.error("esUtil # batchUpdateParent # {}", e.getMessage(), e);
                 return Boolean.FALSE;
             }
         }
@@ -461,7 +290,7 @@ public class EsUtil {
 
     /**
      * <p>
-     * 批量删除文档
+     * 批量删除父文档
      * </p>
      *
      * @param indexName indexName
@@ -470,31 +299,26 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean batchDelParent(String indexName, List<Integer> ids) {
+    public static Boolean batchDelDoc(String indexName, List<Integer> ids, String routAddress) {
         if (CollUtil.isNotEmpty(ids)) {
             BulkRequest bulkRequest = new BulkRequest();
             int count = ids.size();
             for (Integer id : ids) {
-                if (!checkParentDoc(indexName, id)) {
-                    log.info(id + "文档不存在，删除失败");
+                if (!checkDoc(indexName, id, null)) {
                     count--;
                     continue;
                 }
                 DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc", String.valueOf(id));
-                List<Integer> childrenIds = getChildrenIds(indexName, "collection_content", id);
-                if (childrenIds != null) {
-                    childrenIds.forEach(i -> delChildDoc(indexName, i, id));
-                }
+                deleteRequest.routing(routAddress);
                 bulkRequest.add(deleteRequest);
             }
             if (count == 0) {
                 return Boolean.FALSE;
             }
             try {
-                client.bulk(bulkRequest, RequestOptions.DEFAULT);
-                return Boolean.TRUE;
+                return client.bulk(bulkRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
             } catch (IOException e) {
-                log.error("esUtil # batchDel #" + e.getMessage(), e);
+                log.error("esUtil# bulk # {}", e.getMessage(), e);
                 return Boolean.FALSE;
             }
         }
@@ -504,42 +328,15 @@ public class EsUtil {
 
     /**
      * <p>
-     * 查看join类型的子文档是否存在
+     * 判断是否存在index或doc时调用此方法
      * </p>
      *
-     * @param indexName indexName
-     * @param childId   childId
-     * @param parentId  parentId
-     * @return Boolean
+     * @param getRequest getRequest
      * @author heshuyao
-     * @since 2021/7/29
+     * @since 2021/8/4
      */
-    public static Boolean checkChildDoc(String indexName, Integer childId, Integer parentId) {
-        GetRequest getRequest = new GetRequest(indexName, "_doc", String.valueOf(childId));
-        getRequest.routing(String.valueOf(parentId));
-        getRequest.fetchSourceContext(new FetchSourceContext(false));
-        getRequest.storedFields("_none_");
-        try {
-            return client.exists(getRequest, RequestOptions.DEFAULT);
-        } catch (IOException e) {
-            log.error("esUtil # checkChildDoc #" + e.getMessage(), e);
-            return Boolean.FALSE;
-        }
-    }
-
-    /**
-     * <p>
-     * 查看join类型的父文档是否存在
-     * </p>
-     *
-     * @param indexName indexName
-     * @param id        id
-     * @return Boolean
-     * @author heshuyao
-     * @since 2021/7/29
-     */
-    public static Boolean checkParentDoc(String indexName, Integer id) {
-        return checkDoc(indexName, id);
+    private static void setNoFetchAndStore(GetRequest getRequest) {
+        getRequest.fetchSourceContext(new FetchSourceContext(false)).storedFields("_none_");
     }
 
     /**
@@ -553,14 +350,14 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean checkDoc(String indexName, Integer id) {
+    public static Boolean checkDoc(String indexName, Integer id, String routAddress) {
         GetRequest getRequest = new GetRequest(indexName, "_doc", String.valueOf(id));
-        getRequest.fetchSourceContext(new FetchSourceContext(false));
-        getRequest.storedFields("_none_");
+        EsUtil.setNoFetchAndStore(getRequest);
+        getRequest.routing(routAddress);
         try {
             return client.exists(getRequest, RequestOptions.DEFAULT);
         } catch (Exception e) {
-            log.error("esUtil # checkDoc #" + e.getMessage(), e);
+            log.error("esUtil # checkDoc # {}", e.getMessage(), e);
             return Boolean.FALSE;
         }
     }
@@ -579,7 +376,7 @@ public class EsUtil {
         try {
             return client.indices().exists(new GetIndexRequest().indices(indexName), RequestOptions.DEFAULT);
         } catch (Exception e) {
-            log.error("esUtil # checkIndex #" + e.getMessage(), e);
+            log.error("esUtil # checkIndex # {}", e.getMessage(), e);
             return Boolean.FALSE;
         }
     }
@@ -597,19 +394,11 @@ public class EsUtil {
     public static List<Integer> getChildrenIds(String indexName, String parentName, Integer parentId) {
         SearchRequest searchRequest = new SearchRequest(indexName);
         SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
         HasParentQueryBuilder parentQuery = JoinQueryBuilders.hasParentQuery(parentName,
                 QueryBuilders.termQuery("_id", parentId), false);
-        boolQueryBuilder.filter(parentQuery);
-        searchSourceBuilder.query(boolQueryBuilder);
+        searchSourceBuilder.query(parentQuery);
         searchRequest.source(searchSourceBuilder);
-        SearchResponse searchResponse = null;
-        try {
-            searchResponse = client.search(searchRequest, RequestOptions.DEFAULT);
-        } catch (IOException e) {
-            log.error("esUtil#getChildrenIds#" + e.getMessage(), e);
-            return null;
-        }
+        SearchResponse searchResponse = EsUtil.search(searchRequest);
         return searchResponse != null ? Optional.of(Arrays.stream((searchResponse.getHits().getHits()))
                 .map(i -> Integer.parseInt(i.getId()))
                 .collect(Collectors.toList()))
@@ -618,7 +407,7 @@ public class EsUtil {
 
     /**
      * <p>
-     * 获取企业文化的总记录数
+     * 根据类型获取记录数
      * </p>
      *
      * @param indexName indexName
@@ -626,16 +415,16 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/8/2
      */
-    public static Integer getCount(String indexName) {
+    public static Integer getCountByTypeId(String indexName, Integer typeId) {
         SearchRequest searchRequest = new SearchRequest(indexName);
         SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-        searchSourceBuilder.query(QueryBuilders.termQuery("typeId", 2));
+        searchSourceBuilder.query(QueryBuilders.termQuery("typeId", typeId));
         SearchResponse search = null;
         try {
             search = client.search(searchRequest, RequestOptions.DEFAULT);
         } catch (IOException e) {
-            log.error("esUtil#getCount#" + e.getMessage(), e);
+            log.error("esUtil # getCountByTypeId # {}", e.getMessage(), e);
         }
-        return search != null ? Convert.toInt(search.getHits().getTotalHits()) : 0;
+        return search.status() == RestStatus.OK ? Convert.toInt(search.getHits().totalHits) : 0;
     }
 }

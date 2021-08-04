@@ -68,10 +68,24 @@
       <recent name="C:\dev\files\es\src\main\java\com\example\es\entity" />
     </key>
     <key name="CopyClassDialog.RECENTS_KEY">
+      <recent name="com.example.es.config" />
       <recent name="com.example.es.entity" />
     </key>
   </component>
-  <component name="RunManager">
+  <component name="RunManager" selected="Application.EsUtil">
+    <configuration name="EsUtil" type="Application" factoryName="Application" temporary="true" nameIsGenerated="true">
+      <option name="MAIN_CLASS_NAME" value="com.example.es.util.EsUtil" />
+      <module name="es" />
+      <extension name="coverage">
+        <pattern>
+          <option name="PATTERN" value="com.example.es.util.*" />
+          <option name="ENABLED" value="true" />
+        </pattern>
+      </extension>
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
     <configuration default="true" type="ArquillianJUnit" factoryName="" nameIsGenerated="true">
       <option name="arquillianRunConfiguration">
         <value>
@@ -79,6 +93,22 @@
         </value>
       </option>
       <option name="TEST_OBJECT" value="class" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="EsApplicationTests.test" type="JUnit" factoryName="JUnit" temporary="true" nameIsGenerated="true">
+      <module name="es" />
+      <extension name="coverage">
+        <pattern>
+          <option name="PATTERN" value="com.example.es.*" />
+          <option name="ENABLED" value="true" />
+        </pattern>
+      </extension>
+      <option name="PACKAGE_NAME" value="com.example.es" />
+      <option name="MAIN_CLASS_NAME" value="com.example.es.EsApplicationTests" />
+      <option name="METHOD_NAME" value="test" />
+      <option name="TEST_OBJECT" value="method" />
       <method v="2">
         <option name="Make" enabled="true" />
       </method>
@@ -218,6 +248,12 @@
         <option name="Make" enabled="true" />
       </method>
     </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Application.EsUtil" />
+        <item itemvalue="JUnit.EsApplicationTests.test" />
+      </list>
+    </recent_temporary>
   </component>
   <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
   <component name="SshConsoleOptionsProvider">
@@ -238,7 +274,7 @@
       <workItem from="1627120014603" duration="12290000" />
       <workItem from="1627260357648" duration="21716000" />
       <workItem from="1627978542543" duration="6844000" />
-      <workItem from="1628038036049" duration="1488000" />
+      <workItem from="1628038036049" duration="14906000" />
     </task>
     <task id="LOCAL-00001" summary="es测试">
       <created>1627989372856</created>
