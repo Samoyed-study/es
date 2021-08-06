@@ -2,13 +2,16 @@ package com.example.es.util;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.convert.Convert;
-import cn.hutool.core.util.ObjectUtil;
+import cn.hutool.core.date.LocalDateTimeUtil;
 import cn.hutool.core.util.ReflectUtil;
+import cn.hutool.core.util.StrUtil;
 import com.example.es.annotation.EsField;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.indices.get.GetIndexRequest;
 import org.elasticsearch.action.bulk.BulkRequest;
+import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.delete.DeleteRequest;
 import org.elasticsearch.action.get.GetRequest;
 import org.elasticsearch.action.index.IndexRequest;
@@ -18,11 +21,7 @@ import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestHighLevelClient;
 import org.elasticsearch.common.xcontent.XContentType;
-import org.elasticsearch.index.query.QueryBuilders;
-import org.elasticsearch.join.query.HasParentQueryBuilder;
-import org.elasticsearch.join.query.JoinQueryBuilders;
 import org.elasticsearch.rest.RestStatus;
-import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
 import org.springframework.stereotype.Component;
 
@@ -30,10 +29,8 @@ import javax.annotation.PostConstruct;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 
 /**
  * <p>
@@ -100,8 +97,7 @@ public class EsUtil {
             try {
                 Object filedValue = field.get(source);
                 if (filedValue != null && filedValue.getClass().equals(LocalDateTime.class)) {
-                    DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-                    filedValue = dtf.format(Convert.convert(LocalDateTime.class, filedValue));
+                    filedValue = LocalDateTimeUtil.formatNormal(Convert.convert(LocalDateTime.class, filedValue));
                 }
                 esMap.put(filedName, filedValue);
             } catch (IllegalAccessException e) {
@@ -116,59 +112,31 @@ public class EsUtil {
 
     /**
      * <p>
-     * 将传入对象中要存入es的字段和属性进行转换
-     * </p>
-     *
-     * @param list list
-     * @return List
-     * @author heshuyao
-     * @since 2021/8/2
-     */
-    public static List<Map<String, Object>> toEsMaps(List<?> list, Consumer<? super Map<String, Object>> extra) {
-        if (CollUtil.isNotEmpty(list)) {
-            return list.stream().map(a -> EsUtil.toEsMap(a, extra)).collect(Collectors.toList());
-        }
-        return null;
-    }
-
-
-    /**
-     * <p>
      * 批量增加文档
      * </p>
      *
      * @param indexName  indexName
      * @param sourceMaps sourceMaps
-     * @return Boolean
      * @author heshuyao
      * @since 2021/8/1
      */
-    public static Boolean batchAddDoc(String indexName, List<? extends Map<String, Object>> sourceMaps, String routAddress) {
+    public static void batchAddDoc(String indexName, List<? extends Map<String, Object>> sourceMaps, String routingName, String customKeyName) {
         if (CollUtil.isNotEmpty(sourceMaps)) {
             BulkRequest bulkRequest = new BulkRequest();
-            int count = sourceMaps.size();
-            for (Map<String, Object> m : sourceMaps) {
-                Object id = m.get("id");
-                if (checkDoc(indexName, Convert.toInt(id), String.valueOf(routAddress)) || ObjectUtil.isEmpty(id)) {
-                    count--;
-                    continue;
+            sourceMaps.forEach(m -> {
+                String id = Objects.toString(m.get("id"), null);
+                String routing = Objects.toString(m.remove(routingName), null);
+                String key = Objects.toString(m.remove(customKeyName), null);
+                id = key != null ? key : id;
+                IndexRequest indexRequest = new IndexRequest(indexName, "_doc", id);
+                indexRequest.source(m, XContentType.JSON);
+                if (StrUtil.isNotBlank(routing)) {
+                    indexRequest.routing(routing);
                 }
-                IndexRequest indexRequest = new IndexRequest(indexName, "_doc", String.valueOf(m.remove("id")));
-                indexRequest.source(m);
-                indexRequest.routing(routAddress);
                 bulkRequest.add(indexRequest);
-            }
-            if (count == 0) {
-                return Boolean.FALSE;
-            }
-            try {
-                return client.bulk(bulkRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
-            } catch (IOException e) {
-                log.error("esUtil # batchAddChild #{}", e.getMessage(), e);
-                return Boolean.FALSE;
-            }
+            });
+            dealBatchAsy(bulkRequest);
         }
-        return Boolean.FALSE;
     }
 
     /**
@@ -182,20 +150,16 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean delDoc(String indexName, Integer id, String routAddress) {
-        if (!checkDoc(indexName, id, routAddress)) {
-            return Boolean.FALSE;
-        }
-        DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc", String.valueOf(id));
-        deleteRequest.routing(routAddress);
+    public static Boolean delDoc(String indexName, String id, String routing) {
+        DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc", id);
+        deleteRequest.routing(routing);
         try {
             return client.delete(deleteRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
         } catch (Exception e) {
-            log.error("esUtil # delDoc #{}", e.getMessage(), e);
+            log.error("esUtil # delDoc # {}", e.getMessage(), e);
             return Boolean.FALSE;
         }
     }
-
 
     /**
      * <p>
@@ -208,16 +172,19 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/31
      */
-    public static Boolean addDoc(String indexName, Map<String, Object> sourceMap, String routAddress) {
-        if (checkDoc(indexName, Convert.toInt(sourceMap.get("id")), routAddress)) {
-            return Boolean.FALSE;
+    public static Boolean addDoc(String indexName, Map<String, Object> sourceMap, String routingName, String customKeyName) {
+        String routing = Objects.toString(sourceMap.remove(routingName), null);
+        String id = Objects.toString(sourceMap.get("id"), null);
+        String key = Objects.toString(sourceMap.remove(customKeyName), null);
+        id = key != null ? key : id;
+        IndexRequest indexRequest = new IndexRequest(indexName, "_doc", id);
+        indexRequest.source(sourceMap, XContentType.JSON).opType("create");
+        if (StrUtil.isNotBlank(routing)) {
+            indexRequest.routing(routing);
         }
-        IndexRequest indexRequest = new IndexRequest(indexName, "_doc");
-        indexRequest.id(String.valueOf(sourceMap.remove("id"))).source(sourceMap, XContentType.JSON);
-        indexRequest.routing(routAddress);
         try {
-            return client.index(indexRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
-        } catch (Exception e) {
+            return client.index(indexRequest, RequestOptions.DEFAULT).status() == RestStatus.CREATED ? Boolean.TRUE : Boolean.FALSE;
+        } catch (IOException e) {
             log.error("esUtil # addDoc #{}", e.getMessage(), e);
             return Boolean.FALSE;
         }
@@ -234,17 +201,20 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/30
      */
-    public static Boolean updateDoc(String indexName, Map<String, Object> sourceMap, String routAddress) {
-        if (!checkDoc(indexName, Convert.toInt(sourceMap.get("id")), routAddress)) {
-            return Boolean.FALSE;
+    public static Boolean updateDoc(String indexName, Map<String, Object> sourceMap, String routingName, String customKeyName) {
+        String id = Objects.toString(sourceMap.get("id"), null);
+        String routing = Objects.toString(sourceMap.remove(routingName), null);
+        String key = Objects.toString(sourceMap.remove(customKeyName), null);
+        id = key != null ? key : id;
+        UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc", id);
+        updateRequest.doc(sourceMap).opType();
+        if (StrUtil.isNotBlank(routing)) {
+            updateRequest.routing(routing);
         }
-        UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc", String.valueOf(sourceMap.remove("id")));
-        updateRequest.routing(routAddress);
-        updateRequest.doc(sourceMap, XContentType.JSON);
         try {
             return client.update(updateRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
-        } catch (Exception e) {
-            log.error("esUtil # updateDoc #{}", e.getMessage(), e);
+        } catch (IOException e) {
+            log.error("esUtil # updateDoc # {}", e.getMessage(), e);
             return Boolean.FALSE;
         }
     }
@@ -260,37 +230,28 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean batchUpdateDoc(String indexName, List<? extends Map<String, Object>> sourceMaps) {
+    public static void batchUpdateDoc(String indexName, List<? extends Map<String, Object>> sourceMaps, String routingName, String customKeyName) {
         if (CollUtil.isNotEmpty(sourceMaps)) {
             BulkRequest bulkRequest = new BulkRequest();
-            int count = sourceMaps.size();
-            for (Map<String, Object> v : sourceMaps) {
-                Object id = v.get("id");
-                if (!checkDoc(indexName, Convert.toInt(id), null)) {
-                    count--;
-                    continue;
+            sourceMaps.forEach(m -> {
+                String routing = Objects.toString(m.remove(routingName), null);
+                String id = Objects.toString(m.get("id"), null);
+                String key = Objects.toString(m.remove(customKeyName), null);
+                id = key != null ? key : id;
+                UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc", id);
+                updateRequest.doc(m).opType();
+                if (StrUtil.isNotBlank(routing)) {
+                    updateRequest.routing(routing);
                 }
-                UpdateRequest updateRequest = new UpdateRequest(indexName, "_doc", String.valueOf(v.remove("id")));
-                updateRequest.doc(v, XContentType.JSON);
                 bulkRequest.add(updateRequest);
-            }
-            if (count == 0) {
-                return Boolean.FALSE;
-            }
-            try {
-                client.bulk(bulkRequest, RequestOptions.DEFAULT);
-                return Boolean.TRUE;
-            } catch (IOException e) {
-                log.error("esUtil # batchUpdateParent # {}", e.getMessage(), e);
-                return Boolean.FALSE;
-            }
+            });
+            dealBatchAsy(bulkRequest);
         }
-        return Boolean.FALSE;
     }
 
     /**
      * <p>
-     * 批量删除父文档
+     * 批量删除文档
      * </p>
      *
      * @param indexName indexName
@@ -299,44 +260,16 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean batchDelDoc(String indexName, List<Integer> ids, String routAddress) {
+    public static void batchDelDoc(String indexName, List<String> ids) {
         if (CollUtil.isNotEmpty(ids)) {
             BulkRequest bulkRequest = new BulkRequest();
-            int count = ids.size();
-            for (Integer id : ids) {
-                if (!checkDoc(indexName, id, null)) {
-                    count--;
-                    continue;
-                }
-                DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc", String.valueOf(id));
-                deleteRequest.routing(routAddress);
+            ids.forEach(id -> {
+                DeleteRequest deleteRequest = new DeleteRequest(indexName, "_doc", id);
+                deleteRequest.opType();
                 bulkRequest.add(deleteRequest);
-            }
-            if (count == 0) {
-                return Boolean.FALSE;
-            }
-            try {
-                return client.bulk(bulkRequest, RequestOptions.DEFAULT).status() == RestStatus.OK ? Boolean.TRUE : Boolean.FALSE;
-            } catch (IOException e) {
-                log.error("esUtil# bulk # {}", e.getMessage(), e);
-                return Boolean.FALSE;
-            }
+            });
+            dealBatchAsy(bulkRequest);
         }
-        return Boolean.FALSE;
-    }
-
-
-    /**
-     * <p>
-     * 判断是否存在index或doc时调用此方法
-     * </p>
-     *
-     * @param getRequest getRequest
-     * @author heshuyao
-     * @since 2021/8/4
-     */
-    private static void setNoFetchAndStore(GetRequest getRequest) {
-        getRequest.fetchSourceContext(new FetchSourceContext(false)).storedFields("_none_");
     }
 
     /**
@@ -350,10 +283,13 @@ public class EsUtil {
      * @author heshuyao
      * @since 2021/7/29
      */
-    public static Boolean checkDoc(String indexName, Integer id, String routAddress) {
-        GetRequest getRequest = new GetRequest(indexName, "_doc", String.valueOf(id));
-        EsUtil.setNoFetchAndStore(getRequest);
-        getRequest.routing(routAddress);
+    public static Boolean checkDoc(String indexName, String id, String routing) {
+        GetRequest getRequest = new GetRequest(indexName);
+        getRequest.fetchSourceContext(new FetchSourceContext(false)).storedFields("_none_");
+        getRequest.type("_doc").id(id);
+        if (StrUtil.isNotBlank(routing)) {
+            getRequest.routing(routing);
+        }
         try {
             return client.exists(getRequest, RequestOptions.DEFAULT);
         } catch (Exception e) {
@@ -383,48 +319,25 @@ public class EsUtil {
 
     /**
      * <p>
-     * 获取父文档中子文档的所有id
+     * 异步处理批量操作
      * </p>
      *
-     * @param indexName indexName
-     * @return List
-     * @author heshuyao
-     * @since 2021/7/31
-     */
-    public static List<Integer> getChildrenIds(String indexName, String parentName, Integer parentId) {
-        SearchRequest searchRequest = new SearchRequest(indexName);
-        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-        HasParentQueryBuilder parentQuery = JoinQueryBuilders.hasParentQuery(parentName,
-                QueryBuilders.termQuery("_id", parentId), false);
-        searchSourceBuilder.query(parentQuery);
-        searchRequest.source(searchSourceBuilder);
-        SearchResponse searchResponse = EsUtil.search(searchRequest);
-        return searchResponse != null ? Optional.of(Arrays.stream((searchResponse.getHits().getHits()))
-                .map(i -> Integer.parseInt(i.getId()))
-                .collect(Collectors.toList()))
-                .orElse(new ArrayList<>()) : null;
-    }
-
-    /**
-     * <p>
-     * 根据类型获取记录数
-     * </p>
-     *
-     * @param indexName indexName
-     * @return Integer
+     * @param bulkRequest bulkRequest
      * @author heshuyao
      * @since 2021/8/2
      */
-    public static Integer getCountByTypeId(String indexName, Integer typeId) {
-        SearchRequest searchRequest = new SearchRequest(indexName);
-        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-        searchSourceBuilder.query(QueryBuilders.termQuery("typeId", typeId));
-        SearchResponse search = null;
-        try {
-            search = client.search(searchRequest, RequestOptions.DEFAULT);
-        } catch (IOException e) {
-            log.error("esUtil # getCountByTypeId # {}", e.getMessage(), e);
-        }
-        return search.status() == RestStatus.OK ? Convert.toInt(search.getHits().totalHits) : 0;
+    private static void dealBatchAsy(BulkRequest bulkRequest) {
+        ActionListener<BulkResponse> listener = new ActionListener<BulkResponse>() {
+            @Override
+            public void onResponse(BulkResponse bulkResponse) {
+                log.info("批量操作ES数据成功");
+            }
+
+            @Override
+            public void onFailure(Exception e) {
+                log.error("esUtil # dealBatchAsy # {}", e.getMessage(), e);
+            }
+        };
+        client.bulkAsync(bulkRequest, RequestOptions.DEFAULT, listener);
     }
 }

@@ -22,6 +22,6 @@ public class EsUtilTest extends TestCase {
     }
 
     @Test
-    public void batchAddDoc() {
+    public void AddDoc() {
     }
 }
