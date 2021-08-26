@@ -4,9 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2fecf687-5a65-4ac4-85ac-b0f90d6f5b2a" name="Default Changelist" comment="">
-      <change beforePath="$PROJECT_DIR$/src/test/java/com/example/es/util/EsUtilTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/example/es/util/EsUtilTest.java" afterDir="false" />
-    </list>
+    <list default="true" id="2fecf687-5a65-4ac4-85ac-b0f90d6f5b2a" name="Default Changelist" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -279,6 +277,7 @@
       <workItem from="1628038036049" duration="14906000" />
       <workItem from="1628061100396" duration="5993000" />
       <workItem from="1628248294436" duration="49000" />
+      <workItem from="1628257828821" duration="656000" />
     </task>
     <task id="LOCAL-00001" summary="es测试">
       <created>1627989372856</created>
